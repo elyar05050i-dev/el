@@ -50,9 +50,12 @@ jobs:
           java-version: '17'
 
       - name: Install Android SDK build tools
-        run: |
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
-          ls "$ANDROID_HOME/platforms" 2>/dev/null || ls "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || true
+        uses: android-actions/setup-android@v2
+        with:
+          sdk-version: r25
+          cmdline-tools-version: '11076708'
+          build-tools: 35.0.0
+          platforms: android-35
 
       - name: Set up NDK
         uses: nttld/setup-ndk@v1
