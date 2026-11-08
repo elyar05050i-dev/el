@@ -1,0 +1,72 @@
+name: Build DDK KernelSU Module
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-lkm:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi: [
+          android12-5.10,
+          android13-5.10,
+          android13-5.15,
+          android14-5.15,
+          android14-6.1,
+          android15-6.6,
+          android16-6.12,
+          android17-6.18
+        ]
+    container:
+      image: ghcr.io/ylarod/ddk-min:${{ matrix.kmi }}-20260828
+      options: --privileged
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build susfs_guard_lkm.ko
+        run: |
+          make -k -C "$KDIR" M=kernel ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules
+
+      - name: Upload ko artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs_guard_lkm-${{ matrix.kmi }}-arm64
+          path: kernel/susfs_guard_lkm.ko
+
+  module-zip:
+    needs: build-lkm
+    if: github.repository != 'dreamcolor123/susfs4skp-lkm'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download all ko artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ko-artifacts
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Pack flashable zip
+        run: |
+          python tools/pack_module.py \
+            --ko-dir ko-artifacts \
+            --insmod bin/susfs_insmod \
+            --tag $(git describe --tags --always 2>/dev/null || echo main) \
+            --out susfs_guard_lkm-module-arm64.zip
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs_guard_lkm-module-arm64
+          path: susfs_guard_lkm-module-arm64.zip

@@ -1,0 +1,36 @@
+name: Module Zip Packaging
+
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ github.event.release.tag_name }}" --dir release-assets --pattern 'susfs_guard_lkm-*.ko'
+          gh release download "${{ github.event.release.tag_name }}" --dir release-assets --pattern 'susfs_insmod'
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Pack flashable zip
+        run: |
+          python tools/pack_module.py \
+            --ko-dir release-assets \
+            --insmod release-assets/susfs_insmod \
+            --tag ${{ github.event.release.tag_name }} \
+            --out susfs_guard_lkm-module-${{ github.event.release.tag_name }}.zip
+
+      - name: Upload zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: susfs_guard_lkm-module-${{ github.event.release.tag_name }}.zip
