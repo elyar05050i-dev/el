@@ -33,16 +33,16 @@ jobs:
 
       - name: Build susfs_guard_lkm.ko
         run: |
-          set -x
-          make -k -C "$KDIR" M="$PWD/kernel" ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules 2>&1
-          echo "Build exit code: $?"
-          find "$PWD/kernel" -name "*.ko" -type f 2>/dev/null || echo "No .ko files found in kernel/"
+          set -eux
+          make -k -C "$KDIR" M="$PWD/kernel" ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules
+          test -f "$PWD/kernel/susfs_guard_lkm.ko"
+          cp "$PWD/kernel/susfs_guard_lkm.ko" "$PWD/kernel/susfs_guard_lkm-${{ matrix.kmi }}.ko"
 
       - name: Upload ko artifact
         uses: actions/upload-artifact@v4
         with:
           name: susfs_guard_lkm-${{ matrix.kmi }}-arm64
-          path: kernel/*.ko
+          path: kernel/susfs_guard_lkm-${{ matrix.kmi }}.ko
 
   module-zip:
     needs: build-lkm
@@ -63,16 +63,28 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install loader toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Build arm64 loader
+        run: |
+          mkdir -p bin
+          clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie \
+            -fno-stack-protector -fno-builtin -fuse-ld=lld -Wl,-e,_start \
+            -o bin/susfs_insmod tools/susfs_insmod.c
+
       - name: Pack flashable zip
         run: |
           python tools/pack_module.py \
             --ko-dir ko-artifacts \
             --insmod bin/susfs_insmod \
-            --tag $(git describe --tags --always 2>/dev/null || echo main) \
-            --out susfs_guard_lkm-module-arm64.zip
+            --tag 0.3.11 \
+            --out 0.3.11-6.1-6.6-6.12-6.18-SUSFS-Guard-arm64.zip
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: susfs_guard_lkm-module-arm64
-          path: susfs_guard_lkm-module-arm64.zip
+          path: 0.3.11-6.1-6.6-6.12-6.18-SUSFS-Guard-arm64.zip
