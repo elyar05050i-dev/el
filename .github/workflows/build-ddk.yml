@@ -24,15 +24,25 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Debug paths
+        run: |
+          echo "PWD=$PWD"
+          echo "KDIR=$KDIR"
+          ls -la kernel/
+          ls -la "$KDIR"/
+
       - name: Build susfs_guard_lkm.ko
         run: |
-          make -k -C "$KDIR" M="$PWD/kernel" ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules
+          set -x
+          make -k -C "$KDIR" M="$PWD/kernel" ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules 2>&1
+          echo "Build exit code: $?"
+          find "$PWD/kernel" -name "*.ko" -type f 2>/dev/null || echo "No .ko files found in kernel/"
 
       - name: Upload ko artifact
         uses: actions/upload-artifact@v4
         with:
           name: susfs_guard_lkm-${{ matrix.kmi }}-arm64
-          path: kernel/susfs_guard_lkm.ko
+          path: kernel/*.ko
 
   module-zip:
     needs: build-lkm
