@@ -1,0 +1,79 @@
+GitHub Actions 错误汇总
+仓库: elyar05050i-dev/el
+生成日期: 2026-11-08
+范围: Actions API 当前返回的最近失败运行；相同根因的重复运行合并记录。
+
+============================================================
+1. CodeQL: management job 调用了不存在的测试入口
+运行: 42468892021, 42468401336, 42467228410, 42460329872 等
+链接: https://github.com/elyar05050i-dev/el/actions/runs/42468892021
+工作流: .github/workflows/codeql.yml
+主要日志:
+  python3: can't open file '/home/runner/work/el/el/management/tests/main_runner.py': [Errno 2] No such file or directory
+  Process completed with exit code 2.
+后续连带错误:
+  No files were found with the provided path: codeql-results/management/*.sarif. No artifacts will be uploaded.
+  CodeQL job status was configuration error.
+原因/建议:
+  当前仓库不存在 management/tests/main_runner.py。实际存在 simple_service_runner.py 和 embedded_lifecycle_runner.py。
+  将 workflow 命令改为仓库中实际存在、且与所需 CodeQL 构建用途相符的脚本。注意 simple_service_runner.py 会运行普通和 ASan/UBSan 测试，不接受 --build-only 参数；不能只替换路径并保留该参数。
+
+============================================================
+2. CodeQL: c-cpp 管理/内核编译失败（旧运行中观察到）
+运行: 42460329872（对应 CodeQL job 日志）
+链接: https://github.com/elyar05050i-dev/el/actions/runs/42460329872
+工作流: .github/workflows/codeql.yml
+编译错误:
+  kernel/sus_dirent.c: static_assert failed：filldir_t 与 sd_actor 函数指针签名不匹配。
+  多处比较不同类型的函数指针，以及将 bool 返回的 sd_actor 传给 filldir_t 参数时类型不兼容。
+  kernel/susfs_content.c: undeclared identifier 'FUSE_SUPER_MAGIC'.
+构建退出:
+  make ... Error 2
+  Process completed with exit code 2.
+后续连带错误:
+  No files were found with the provided path: codeql-results/c-cpp/*.sarif.
+说明:
+  需要按该运行使用的 Android 13 / 5.15 DDK 头文件兼容 filldir_t 返回类型，并确保 FUSE_SUPER_MAGIC 在目标内核版本下有可用定义/受控兼容处理。
+
+============================================================
+3. Build DDK: LKM artifact 未找到
+运行: 42460329845 / 42459543053 等
+链接: https://github.com/elyar05050i-dev/el/actions/runs/42460329845
+工作流: .github/workflows/build-ddk.yml
+打包步骤错误:
+  no susfs_guard_lkm-*.ko in ko-artifacts
+  Process completed with exit code 1.
+原因/建议:
+  打包阶段没有在下载的 ko-artifacts 中找到匹配的 .ko 文件。需检查上游矩阵构建是否成功、artifact 名称/目录结构，以及下载后实际文件名是否与 assemble/package 脚本的预期一致。
+
+============================================================
+4. Build DDK: DDK 源码树缺少 kernel/Makefile（旧运行中观察到）
+运行: 42459543053（日志数据对应内部 run 115014052277）
+链接: https://github.com/elyar05050i-dev/el/actions/runs/42459543053
+工作流: .github/workflows/build-ddk.yml
+关键日志:
+  /opt/ddk/src/android16-6.12/scripts/Makefile.build:41: kernel/Makefile: No such file or directory
+  make: *** ... Error 2
+  Process completed with exit code 2.
+另一个旧的 5.10 目标也出现:
+  /opt/ddk/src/android12-5.10/scripts/Makefile.build:44: /home/runner/work/el/el/kernel/Makefile: No such file or directory
+原因/建议:
+  外部模块构建传入的源码/目标目录与 DDK Makefile 预期不一致，或对应 DDK 镜像并未提供可用的目标内核源树。核对 KDIR、M= 参数、目标模块目录和 DDK 镜像布局。
+
+============================================================
+5. Azure Web Apps Node: 缺少依赖锁文件
+运行: 42451882717（日志内部 run 115001375067）
+链接: https://github.com/elyar05050i-dev/el/actions/runs/42451882717
+工作流: .github/workflows/azure-webapps-node.yml
+日志:
+  Dependencies lock file is not found in /home/runner/work/el/el. Supported file patterns: package-lock.json,npm-shrinkwrap.json,yarn.lock
+原因/建议:
+  工作流启用了依赖缓存或依赖安装配置，但仓库根目录未找到 package-lock.json、npm-shrinkwrap.json 或 yarn.lock。确认 Node 项目目录，并提交对应锁文件；若仓库并非 Node 项目，移除或修正该模板工作流。
+
+============================================================
+重复错误与噪声说明
+- 多个 CodeQL 运行重复出现 main_runner.py 不存在及 SARIF 缺失，按同一根因汇总。
+- 早期 DDK 运行反复出现 kernel/Makefile 缺失，按同类问题汇总。
+- ld.so 对 CodeQL LD_PRELOAD 文件的警告、Node punycode 弃用提示属于警告；日志中不是导致以上构建失败的主要根因。
+- 本汇总只包含本次可检索到日志的失败详情，不代表历史上所有 Actions 运行；部分运行日志 API 未返回可用 job 内容。
+- DDK 流水线中 RPC 客户端/DEX 路径不一致��从 workflow 和 package 脚本静态检查发现的潜在问题，未作为已确认的 Actions 报错列入。
