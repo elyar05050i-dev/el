@@ -30,7 +30,7 @@ jobs:
 
       - name: Build susfs_guard_lkm.ko
         run: |
-          make -k -C "$KDIR" M=kernel ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules
+          make -k -C "$KDIR" M="${{ github.workspace }}/kernel" ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 modules
 
       - name: Upload ko artifact
         uses: actions/upload-artifact@v4
