@@ -167,3 +167,31 @@ print(json.dumps(manifest, indent=2))
         with:
           name: susfs_guard_lksu-module-arm64
           path: susfs_guard_lksu-module-arm64.zip
+
+      - name: Create Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.11-${{ github.run_number }}
+          name: "SUSFS Guard LKM v0.3.11 (Build ${{ github.run_number }})"
+          body: |
+            ## KernelSU/KernelSU Next 独立模块
+            
+            - 模块 ID: `susfs_ksu`
+            - 版本: 0.3.11
+            - versionCode: 16
+            - 支持 KMI: android14-6.1, android15-6.6, android16-6.12, android17-6.18
+            
+            ## 功能
+            - 独立 ARM64 管理后台，无 SKRootPro 依赖
+            - LKM 内核模块加载
+            - 规则管理、配置导入导出、文件管理、WebUI 配置
+            - KernelSU/KernelSU Next 兼容
+            
+            ## 安装
+            1. 下载 `susfs_guard_lksu-module-arm64.zip`
+            2. KernelSU/KernelSU Next → 模块 → 从本地安装
+            3. 重启手机
+          files: susfs_guard_lksu-module-arm64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
