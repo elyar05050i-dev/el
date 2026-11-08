@@ -13,7 +13,24 @@ const RequestApi = (() => {
 
   let sessionPromise = null;
   let rpcSpoolDir = "";
-  const rpcClient = "$MODDIR/bin/susfs_ksu_rpc";
+  let moduleDir = null;
+  let stateDir = null;
+
+  function resolvePaths() {
+    // Try ksu.moduleInfo() first
+    if (typeof ksu !== "undefined" && typeof ksu.moduleInfo === "function") {
+      try {
+        const info = ksu.moduleInfo();
+        if (info && info.moduleDir) moduleDir = info.moduleDir;
+        if (info && info.path) moduleDir = info.path;
+        if (info && info.module_path) moduleDir = info.module_path;
+        if (info && info.stateDir) stateDir = info.stateDir;
+      } catch (_) {}
+    }
+    if (!moduleDir) moduleDir = "/data/adb/modules/susfs_ksu";
+    if (!stateDir) stateDir = "/data/adb/susfs_ksu";
+    return { moduleDir, stateDir };
+  }
 
   function execPromise(cmd, input = "") {
     return new Promise((resolve, reject) => {
@@ -43,7 +60,9 @@ const RequestApi = (() => {
     const body = JSON.stringify(payload);
     // Use stdin for large payloads to avoid shell argument limits and encoding issues
     const json = JSON.stringify({ path, body });
-    const cmd = rpcClient + " /data/adb/susfs_ksu/susfs/rpc.sock";
+    const { moduleDir, stateDir } = resolvePaths();
+    const rpcClient = moduleDir + "/bin/susfs_ksu_rpc";
+    const cmd = rpcClient + " " + stateDir + "/susfs/rpc.sock";
     const result = await execPromise(cmd, json);
     let parsed;
     try { parsed = JSON.parse(result.stdout); } catch (_) {
