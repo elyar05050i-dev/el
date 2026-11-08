@@ -32,12 +32,12 @@ REL=$(cat /proc/sys/kernel/osrelease) || {
   exit 1
 }
 . "$MODDIR/kmi.sh"
-KMI=$(select_kmi "$REL" "$MODDIR") || {
+KMI=$(select_kmi "$REL" "$MODPATH") || {
   echo "no packaged .ko for kernel: $REL"
   set_description "failed: no packaged .ko for kernel $REL"
   exit 1
 }
-KO="$MODDIR/lib/susfs_guard_lkm-$KMI.ko"
+KO="$MODDIR/lkm/lib/susfs_guard_lkm-$KMI.ko"
 [ -s "$KO" ] || {
   echo "missing .ko for $KMI"
   set_description "failed: missing .ko for $KMI"

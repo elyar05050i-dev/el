@@ -67,11 +67,13 @@ bool permitted(int fd){
     ucred peer{};socklen_t length=sizeof(peer);
     return getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&peer,&length)==0&&peer.uid==0;
 }
-std::string load_module(const std::string& module_dir){
+std::string load_module(const std::string& state_dir){
+    const char* resource=getenv("SUSFS_MODULE_DIR");
+    const std::string module_dir=resource&&*resource?resource:state_dir;
     const auto script=module_dir+"/lkm/load.sh";const pid_t child=fork();
     if(child<0)return std::strerror(errno);
     if(!child){
-        const int output=open((module_dir+"/lkm/load.log").c_str(),O_WRONLY|O_CREAT|O_APPEND,0600);
+        const int output=open((state_dir+"/lkm-load.log").c_str(),O_WRONLY|O_CREAT|O_APPEND,0600);
         if(output>=0){dup2(output,1);dup2(output,2);close(output);}
         execl("/system/bin/sh","sh",script.c_str(),nullptr);_exit(127);
     }
@@ -85,8 +87,8 @@ std::string load_module(const std::string& module_dir){
         usleep(50000);
     }
 }
-void serve(int server,int ready,const std::string& module_dir){
-    management::ProcBackend backend;management::Service service(module_dir,backend);
+void serve(int server,int ready,const std::string& state_dir){
+    management::ProcBackend backend;management::Service service(state_dir,backend);
     // The WebUI reads its lifetime preference immediately after start(). Seed
     // first-install settings before readiness, independently of loader/PM time.
     // Keep a damaged existing file intact and let initialize report its error.
@@ -94,11 +96,11 @@ void serve(int server,int ready,const std::string& module_dir){
     (void)service.prepare_configuration(configuration_error);
     // The listener is ready before loading, but requests are accepted only
     // after startup restore. Readiness is independent of kernel availability.
-    if(!write_pid(module_dir)){close(ready);return;}
+    if(!write_pid(state_dir)){close(ready);return;}
     const char success=1;
     if(write(ready,&success,1)!=1){close(ready);return;}
     close(ready);
-    std::string error=load_module(module_dir);service.loader_error(error);
+    std::string error=load_module(state_dir);service.loader_error(error);
     if(!service.initialize(error))service.loader_error("restore: "+error);
     // Android's package service may not exist during the SDK boot callback.
     // Retry that startup dependency without blocking the control listener.
@@ -118,7 +120,9 @@ void serve(int server,int ready,const std::string& module_dir){
     std::mutex clients_mutex;std::condition_variable clients_finished;
     for(;;){
         if(closing.load())break;
+#ifndef SUSFS_KSU_STANDALONE
         if(active.load()==0&&service.may_exit_idle()&&now()-last_activity.load()>20000)break;
+#endif
         pollfd ready_client{server,POLLIN,0};
         const int polled=poll(&ready_client,1,200);
         if(polled<0){if(errno==EINTR)continue;break;}
@@ -160,8 +164,8 @@ void serve(int server,int ready,const std::string& module_dir){
     retry_wake.notify_one();startup_retry.join();
     std::unique_lock<std::mutex> lock(clients_mutex);
     clients_finished.wait(lock,[&]{return active.load()==0;});
-    unlink((module_dir+"/susfs/control.sock").c_str());
-    unlink((module_dir+"/susfs/service.pid").c_str());
+    unlink((state_dir+"/susfs/control.sock").c_str());
+    unlink((state_dir+"/susfs/service.pid").c_str());
 }
 }
 Reply request(const std::string& dir,const std::string& route,const std::string& body){

@@ -41,3 +41,5 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH) $(LKM_ROOT)/management \
 LOCAL_STATIC_LIBRARIES := kernel_module_kit_static_prebuilt libarchive_static_prebuilt liblzma_static_prebuilt
 LOCAL_LDLIBS += -llog -ldl -lz
 include $(BUILD_SHARED_LIBRARY)
+
+include $(LOCAL_PATH)/ksu/Android.mk

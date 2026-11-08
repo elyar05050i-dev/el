@@ -10,7 +10,7 @@
     const element = document.createElement('section');
     element.id = 'susfsClosedOverlay'; element.setAttribute('role', 'alert');
     const title = document.createElement('h2'); title.textContent = 'WebUI 已关闭';
-    const note = document.createElement('p'); note.textContent = '请返回 SKP 管理器，重新启动本模块 WebUI。已应用的内核规则继续生效。';
+    const note = document.createElement('p'); note.textContent = '请返回 KernelSU / KernelSU Next，重新启动本模块 WebUI。已应用的内核规则继续生效。';
     element.append(title, note); document.body.append(element);
     for (const child of document.body.children) if (child !== element) child.inert = true;
   }

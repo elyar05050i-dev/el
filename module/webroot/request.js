@@ -11,94 +11,91 @@ const RequestApi = (() => {
     }
   }
 
-  let sessionToken = "";
   let sessionPromise = null;
+  let rpcSpoolDir = "";
+  const rpcClient = "$MODDIR/bin/susfs_ksu_rpc";
 
-  function endpoint(path) {
-    return new URL(path, window.location.href);
+  function execPromise(cmd, input = "") {
+    return new Promise((resolve, reject) => {
+      if (typeof ksu === "undefined" || typeof ksu.exec !== "function") {
+        reject(new ApiError("KernelSU JS interface not available", { code: "KSU_UNAVAILABLE" }));
+        return;
+      }
+      const callbackName = "ksu_cb_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+      window[callbackName] = (errno, stdout, stderr) => {
+        delete window[callbackName];
+        if (errno !== 0) {
+          reject(new ApiError(stderr || "ksu.exec failed", { code: "KSU_EXEC_FAILED", errno }));
+        } else {
+          resolve({ stdout, stderr });
+        }
+      };
+      try {
+        ksu.exec(cmd, input, callbackName);
+      } catch (error) {
+        delete window[callbackName];
+        reject(new ApiError(error?.message || "ksu.exec threw", { code: "KSU_EXEC_THROW" }));
+      }
+    });
   }
 
-  async function fetchResponse(url, options) {
-    try { return await fetch(url, options); }
-    catch (error) {
-      if (error?.name === 'AbortError' || error instanceof ApiError) throw error;
-      throw new ApiError(error?.message || 'Network request failed', { code: 'REQUEST_FAILED' });
+  async function rpcPost(path, payload = {}) {
+    const body = JSON.stringify(payload);
+    // Use stdin for large payloads to avoid shell argument limits and encoding issues
+    const json = JSON.stringify({ path, body });
+    const cmd = rpcClient + " /data/adb/susfs_ksu/susfs/rpc.sock";
+    const result = await execPromise(cmd, json);
+    let parsed;
+    try { parsed = JSON.parse(result.stdout); } catch (_) {
+      throw new ApiError("Invalid RPC response", { code: "INVALID_RPC_RESPONSE" });
     }
-  }
-
-  async function parseEnvelope(resp) {
-    let payload = null;
-    try {
-      payload = await resp.json();
-    } catch (error) {
-      if (error?.name === 'AbortError') throw error;
-      throw new ApiError(`HTTP ${resp.status}: invalid JSON response`, { status: resp.status });
+    if (parsed.status !== 200) {
+      let message = "RPC error", code = "RPC_ERROR", errno = 0, data = null;
+      try {
+        const env = JSON.parse(parsed.body);
+        message = env.message || message; code = env.code || code; errno = env.errno || errno; data = env.data;
+      } catch (_) {}
+      throw new ApiError(message, { status: parsed.status, code, errno, data });
     }
-    if (!resp.ok || !payload?.ok) {
-      throw new ApiError(payload?.message || `HTTP ${resp.status}`, {
-        status: resp.status,
-        code: payload?.code,
-        errno: payload?.errno,
-        requestId: payload?.requestId,
-        data: payload?.data,
-      });
+    let env;
+    try { env = JSON.parse(parsed.body); } catch (_) {
+      throw new ApiError("Invalid RPC envelope", { code: "INVALID_RPC_ENVELOPE" });
     }
-    if (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
-        && payload.requestId && !payload.data.requestId) {
-      Object.defineProperty(payload.data, 'requestId', {
-        value: payload.requestId, enumerable: false, configurable: true,
-      });
+    if (!env.ok) {
+      throw new ApiError(env.message || "API error", { status: 200, code: env.code, errno: env.errno, data: env.data });
     }
-    return payload.data;
+    if (env.data && typeof env.data === "object" && !Array.isArray(env.data) && env.requestId && !env.data.requestId) {
+      Object.defineProperty(env.data, "requestId", { value: env.requestId, enumerable: false, configurable: true });
+    }
+    return env.data;
   }
 
   async function initSession(force = false) {
-    if (force) {
-      sessionToken = "";
-      sessionPromise = null;
-    }
-    if (sessionToken) return sessionToken;
+    if (force) sessionPromise = null;
     if (!sessionPromise) {
       sessionPromise = (async () => {
-        const resp = await fetchResponse(endpoint('/api/session'), { method: 'POST', body: '' });
-        const data = await parseEnvelope(resp);
+        const data = await rpcPost("/api/session", {});
         if (!data?.token) throw new ApiError("Session token is missing", { code: "INVALID_SESSION" });
-        sessionToken = data.token;
-        return sessionToken;
-      })().catch(error => {
-        sessionPromise = null;
-        throw error;
-      });
+        return data.token;
+      })().catch(error => { sessionPromise = null; throw error; });
     }
     return sessionPromise;
   }
 
-  async function authorizedFetch(path, options = {}, retry = true) {
+  async function authorizedFetch(path, payload = {}, retry = true) {
     if (window.SusfsLifecycle?.closed && path !== '/api/susfs/webui/exit')
-      throw new ApiError('WebUI 已关闭，请从 SKP 管理器重新打开', {code:'WEBUI_CLOSED'});
-    const token = await initSession();
-    const headers = new Headers(options.headers || {});
-    headers.set('X-SKRoot-Session', token);
-    const resp = await fetchResponse(endpoint(path), { ...options, headers });
-    if (resp.status === 401 && retry) {
-      await initSession(true);
-      return authorizedFetch(path, options, false);
-    }
-    return resp;
-  }
-
-  async function postText(path, bodyText = "", options = {}) {
-    return authorizedFetch(path, { method: 'POST', body: bodyText, ...options });
+      throw new ApiError('WebUI 已关闭，请从 KernelSU/KernelSU Next 重新打开', { code: 'WEBUI_CLOSED' });
+    await initSession();
+    const data = await rpcPost(path, payload);
+    return data;
   }
 
   async function postApi(path, payload = {}, options = {}) {
-    const resp = await authorizedFetch(path, {
-      ...options,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify(payload),
-    });
-    return parseEnvelope(resp);
+    return authorizedFetch(path, payload);
+  }
+
+  async function postText(path, bodyText = "", options = {}) {
+    return authorizedFetch(path, { text: bodyText });
   }
 
   function decodeCppUrl(str) {
@@ -106,28 +103,54 @@ const RequestApi = (() => {
     return decodeURIComponent(str.replace(/\+/g, ' '));
   }
 
+  // Terminal/Command related APIs are SKRoot-specific and not available in KSU standalone
+  // They are kept as no-op stubs to avoid breaking existing calls from file-manager.js
   async function sendCommand(cmd) {
-    const resp = await postText('/sendCommand', cmd);
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function getNewOutput() {
-    const resp = await postText('/getNewOutput');
-    if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, { status: resp.status });
-    return resp.text();
+    return ""; // no-op
   }
 
   async function getQuickActions() {
-    const resp = await postText('/getQuickActions');
-    if (!resp.ok) return null;
-    try {
-      const arr = JSON.parse(await resp.text());
-      if (!Array.isArray(arr)) return null;
-      return arr.map(item => typeof item === 'string' ? decodeCppUrl(item) : item);
-    } catch (error) {
-      console.error('getQuickActions parse/decode failed:', error);
-      return null;
-    }
+    return null; // no-op
+  }
+
+  async function saveAutoTasks(tasks) {
+    return ""; // no-op
+  }
+
+  async function getHideDir() {
+    return ""; // no-op
+  }
+
+  async function checkFileType(filePath) {
+    return ""; // no-op
+  }
+
+  async function checkExecMount(dir) {
+    return ""; // no-op
+  }
+
+  async function getTerminalKeepMode() {
+    return ""; // no-op
+  }
+
+  async function saveTerminalKeepMode(enabled) {
+    return ""; // no-op
+  }
+
+  async function getTerminalTransportMode() {
+    return { effective: 'pipe', saved: 'pipe' }; // no-op
+  }
+
+  async function saveTerminalTransportMode(mode) {
+    return ""; // no-op
+  }
+
+  async function exitWebui() {
+    return "";
   }
 
   async function listDir(path) {
@@ -136,60 +159,43 @@ const RequestApi = (() => {
   }
 
   async function getAutoTasks() {
-    const resp = await postText('/getAutoTasks');
-    return resp.ok ? JSON.parse(await resp.text()) : [];
+    return []; // no-op
   }
 
   async function saveAutoTasks(tasks) {
-    const resp = await postText('/saveAutoTasks', tasks);
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function getHideDir() {
-    const resp = await postText('/getHideDir');
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function checkFileType(filePath) {
-    const resp = await postText('/checkFileType', filePath);
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function checkExecMount(dir) {
-    const resp = await postText('/checkExecMount', dir);
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function getTerminalKeepMode() {
-    const resp = await postText('/getTerminalKeepMode');
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function saveTerminalKeepMode(enabled) {
-    const resp = await postText('/saveTerminalKeepMode', enabled ? "1" : "0");
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function getTerminalTransportMode() {
-    const resp = await postText('/getTerminalTransportMode');
-    if (!resp.ok) throw new ApiError(`HTTP ${resp.status}`, { status: resp.status });
-    const data = await resp.json();
-    if (!data || (data.effective !== 'pty' && data.effective !== 'pipe')
-        || (data.saved !== 'pty' && data.saved !== 'pipe')) {
-      throw new ApiError('Invalid terminal transport response');
-    }
-    return data;
+    return { effective: 'pipe', saved: 'pipe' }; // no-op
   }
 
   async function saveTerminalTransportMode(mode) {
-    if (mode !== 'pty' && mode !== 'pipe') throw new ApiError('Invalid terminal transport mode');
-    const resp = await postText('/saveTerminalTransportMode', mode);
-    return resp.ok ? await resp.text() : Promise.reject(new ApiError(`HTTP ${resp.status}`, { status: resp.status }));
+    return ""; // no-op
   }
 
   async function exitWebui() {
-    const resp = await postText('/exitWebui', "", { keepalive: true });
-    return resp.ok ? await resp.text() : "";
+    return "";
   }
 
   const getFileSettings = () => postApi('/api/files/settings/get');

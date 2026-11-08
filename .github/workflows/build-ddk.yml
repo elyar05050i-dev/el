@@ -24,13 +24,6 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Debug paths
-        run: |
-          echo "PWD=$PWD"
-          echo "KDIR=$KDIR"
-          ls -la kernel/
-          ls -la "$KDIR"/
-
       - name: Build susfs_guard_lkm.ko
         run: |
           set -eux
@@ -44,18 +37,114 @@ jobs:
           name: susfs_guard_lkm-${{ matrix.kmi }}-arm64
           path: kernel/susfs_guard_lkm-${{ matrix.kmi }}.ko
 
+  build-native:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK build tools
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || ls "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || true
+
+      - name: Set up NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: 26.3.11579264
+          add-to-path: false
+          local-cache: true
+
+      - name: Build app-metadata DEX
+        run: |
+          ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          javac -encoding UTF-8 --release 8 \
+            -cp "$ANDROID_HOME/platforms/android-35/android.jar" \
+            -d build/meta/classes \
+            module/tools/app-metadata/PlusAppMetadata.java
+          "$ANDROID_HOME/build-tools/35.0.0/d8" --min-api 21 \
+            --lib "$ANDROID_HOME/platforms/android-35/android.jar" \
+            --output build/meta/dex \
+            build/meta/classes/*.class
+          cp build/meta/dex/classes.dex build/meta/app-metadata.dex
+
+      - name: Build ARM64 native daemon and RPC client
+        env:
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          CXX="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+          mkdir -p build/native
+          "$CXX" -std=c++20 -O2 -fPIE -pie -fexceptions -fno-rtti \
+            -DSUSFS_KSU_STANDALONE -D_FILE_OFFSET_BITS=64 -ffile-prefix-map="$PWD"=. \
+            -I module/ksu -I module/vendor/file_manager \
+            -I module/vendor/file_manager/third_party/libarchive/include \
+            -I management -I kernel \
+            module/ksu/ksu_daemon.cpp \
+            module/ksu/susfs_ksu_rpc.cpp \
+            management/{embedded,service,backend,config,config_transfer,inventory,common}.cpp \
+            module/vendor/file_manager/{cJSON,app_metadata_service,file_manager_service,file_manager_api,archive_service,archive_browser_service,image_preview_service,file_broker,storage}.cpp \
+            -Wl,--start-group \
+            module/vendor/file_manager/prebuilt/arm64-v8a/libarchive.a \
+            module/vendor/file_manager/prebuilt/arm64-v8a/liblzma.a \
+            -Wl,--end-group -lz -ldl -llog -lm \
+            -Wl,--no-undefined -Wl,-z,relro,-z,now \
+            -o build/native/susfs_ksu_daemon
+          "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h -d build/native/susfs_ksu_daemon
+
+      - name: Generate build manifest
+        run: |
+          python3 -c "
+import json, hashlib
+from pathlib import Path
+def sha256(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+manifest = {
+  'schema_version': 1,
+  'project': 'susfs4skp-ksu',
+  'module': {'id32': 'fa362333cf458e832cd032fda9a9f3c6', 'version': '0.3.11'},
+  'output': {'path': 'susfs_ksu_daemon', 'bytes': Path('build/native/susfs_ksu_daemon').stat().st_size, 'sha256': sha256('build/native/susfs_ksu_daemon')},
+  'rpc_client': {'path': 'susfs_ksu_rpc', 'bytes': Path('build/native/susfs_ksu_rpc').stat().st_size, 'sha256': sha256('build/native/susfs_ksu_rpc')},
+  'metadata_dex': {'sha256': sha256('build/meta/app-metadata.dex')},
+  'source_files': []
+}
+Path('build/native/build-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+print(json.dumps(manifest, indent=2))
+"
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs_ksu-native-arm64
+          path: |
+            build/native/susfs_ksu_daemon
+            build/native/susfs_ksu_rpc
+            build/native/build-manifest.json
+            build/meta/app-metadata.dex
+
   module-zip:
-    needs: build-lkm
+    needs: [build-lkm, build-native]
     if: github.repository != 'dreamcolor123/susfs4skp-lkm'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Download all ko artifacts
+      - name: Download all KO artifacts
         uses: actions/download-artifact@v4
         with:
           path: ko-artifacts
+          merge-multiple: true
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native-artifacts
           merge-multiple: true
 
       - name: Set up Python
@@ -63,28 +152,18 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install loader toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld
-
-      - name: Build arm64 loader
-        run: |
-          mkdir -p bin
-          clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie \
-            -fno-stack-protector -fno-builtin -fuse-ld=lld -Wl,-e,_start \
-            -o bin/susfs_insmod tools/susfs_insmod.c
-
       - name: Pack flashable zip
         run: |
-          python tools/pack_module.py \
-            --ko-dir ko-artifacts \
-            --insmod bin/susfs_insmod \
-            --tag 0.3.11 \
-            --out 0.3.11-6.1-6.6-6.12-6.18-SUSFS-Guard-arm64.zip
+          python module/package_ksu.py \
+            --build-dir native-artifacts \
+            --lkm-dir ko-artifacts \
+            --expected-kmis android14-6.1 android15-6.6 android16-6.12 android17-6.18 \
+            --version 0.3.11 \
+            --version-code 16 \
+            --out susfs_guard_lksu-module-arm64.zip
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: susfs_guard_lkm-module-arm64
-          path: 0.3.11-6.1-6.6-6.12-6.18-SUSFS-Guard-arm64.zip
+          name: susfs_guard_lksu-module-arm64
+          path: susfs_guard_lksu-module-arm64.zip

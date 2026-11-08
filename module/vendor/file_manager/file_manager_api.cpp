@@ -1,7 +1,11 @@
 #include "file_manager_api.h"
 
 #include "cJSON.h"
+#ifdef SUSFS_KSU_STANDALONE
+#include "../../ksu/private_storage.hpp"
+#else
 #include "module_base_disk_storage.h"
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -344,9 +348,27 @@ cJSON* placesJson(const std::vector<PlaceEntry>& bookmarks, const std::vector<Pl
     return data;
 }
 
+bool readStorage(const std::string& key, std::string& stored) {
+#ifdef SUSFS_KSU_STANDALONE
+    return ksu_storage::read(key, stored);
+#else
+    return is_ok(kernel_module::read_string_disk_storage(key, stored));
+#endif
+}
+
+bool writeStorage(const std::string& key, const std::string& value, std::string& error) {
+#ifdef SUSFS_KSU_STANDALONE
+    return ksu_storage::write(key, value, error);
+#else
+    const KModErr result = kernel_module::write_string_disk_storage(key, value.c_str());
+    if (!is_ok(result)) { error = to_string(result); return false; }
+    return true;
+#endif
+}
+
 void readStoredPlaces(std::vector<PlaceEntry>& bookmarks, std::vector<PlaceEntry>& recent) {
     std::string stored;
-    (void)kernel_module::read_string_disk_storage(kPlacesStorageKey, stored);
+    (void)readStorage(kPlacesStorageKey, stored);
     auto root = makeJson(cJSON_Parse(stored.c_str()));
     if (!root || !cJSON_IsObject(root.get())) return;
     Error ignored;
@@ -421,7 +443,7 @@ ApiReply FileManagerApi::handle(const std::string& path, const std::string& body
 
 ApiReply FileManagerApi::handleSettingsGet() {
     std::string stored;
-    (void)kernel_module::read_string_disk_storage("file_manager_settings_v1", stored);
+    (void)readStorage("file_manager_settings_v1", stored);
     std::string left = "/sdcard";
     std::string right = "/sdcard";
     auto root = makeJson(cJSON_Parse(stored.c_str()));
@@ -458,7 +480,7 @@ ApiReply FileManagerApi::handleSettingsSetHome(const std::string& body) {
     }
 
     std::string stored;
-    (void)kernel_module::read_string_disk_storage("file_manager_settings_v1", stored);
+    (void)readStorage("file_manager_settings_v1", stored);
     std::string left = "/sdcard";
     std::string right = "/sdcard";
     auto old = makeJson(cJSON_Parse(stored.c_str()));
@@ -474,9 +496,9 @@ ApiReply FileManagerApi::handleSettingsSetHome(const std::string& body) {
     cJSON_AddStringToObject(settings.get(), "leftHome", left.c_str());
     cJSON_AddStringToObject(settings.get(), "rightHome", right.c_str());
     std::string json = printJson(settings.get());
-    KModErr result = kernel_module::write_string_disk_storage("file_manager_settings_v1", json.c_str());
-    if (!is_ok(result)) {
-        return makeApiError({"STORAGE_FAILED", "Unable to persist file manager settings: " + to_string(result), EIO});
+    std::string storage_error;
+    if (!writeStorage("file_manager_settings_v1", json, storage_error)) {
+        return makeApiError({"STORAGE_FAILED", "Unable to persist file manager settings: " + storage_error, EIO});
     }
     cJSON* data = cJSON_CreateObject();
     cJSON_AddStringToObject(data, "leftHome", left.c_str());
@@ -507,10 +529,10 @@ ApiReply FileManagerApi::handlePlacesSet(const std::string& body) {
 
     auto stored = makeJson(placesJson(bookmarks, recent));
     const std::string json = printJson(stored.get());
-    const KModErr result = kernel_module::write_string_disk_storage(kPlacesStorageKey, json.c_str());
-    if (!is_ok(result)) {
+    std::string storage_error;
+    if (!writeStorage(kPlacesStorageKey, json, storage_error)) {
         return makeApiError({"STORAGE_FAILED", "Unable to persist bookmarks and recent paths: "
-            + to_string(result), EIO});
+            + storage_error, EIO});
     }
     return success(placesJson(bookmarks, recent));
 }
